@@ -1,3 +1,7 @@
-**/feature_requirements.txt
-**/build
-**/.vscode
+build/
+.vscode/
+.idea/
+*.o
+*.a
+*.so
+*.exe

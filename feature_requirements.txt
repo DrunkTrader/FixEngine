@@ -1,0 +1,15 @@
+# Project Name - FlooFix
+# Project Description - A FIX Protocol Parser is a component that reads raw FIX messages from the wire and converts them into structured fields/objects your engine can understand.
+
+# Development Phases for FIX Parser
+
+## Phase 1 - Basic
+- split tag = value (delimeter = '\x01')
+- store in unordered_map
+- support logon + new order
+
+## Phase 2 - Protocol Safe
+- body length
+- required field validation>
+- Support FIX 4.2 / 4.4
+- zero-copy parsing
