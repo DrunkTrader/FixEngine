@@ -30,6 +30,8 @@ add_library(floofix
     src/parser.cpp
     src/tokenizer.cpp
     src/validator.cpp
+    src/ingestion.cpp
+    src/fix_engine.cpp
 )
 
 target_include_directories(floofix
