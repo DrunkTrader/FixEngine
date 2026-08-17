@@ -1,24 +1,3 @@
-Yes. Given the current state, **v0.3.0** is a reasonable release point.
-
-The README should describe what actually exists now, not future TCP/replay functionality. At v0.3.0, we can honestly document:
-
-* C++20
-* FIX tag/value representation
-* tokenizer
-* parser
-* validator
-* storage
-* incremental ingestion
-* `FixEngine` orchestration
-* bounded/fixed-capacity storage
-* CTest suite
-* benchmarks
-* zero external runtime dependencies
-
-I would also explicitly mark networking/session management as **planned**, so the README doesn't oversell the project. Mature FIX engines generally separate parsing/validation from session and transport concerns. ([GitHub][1])
-
-## Replace `README.md` with this
-
 ````markdown
 # FlooFIX
 
