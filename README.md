@@ -1,189 +1,335 @@
+Yes. Given the current state, **v0.3.0** is a reasonable release point.
+
+The README should describe what actually exists now, not future TCP/replay functionality. At v0.3.0, we can honestly document:
+
+* C++20
+* FIX tag/value representation
+* tokenizer
+* parser
+* validator
+* storage
+* incremental ingestion
+* `FixEngine` orchestration
+* bounded/fixed-capacity storage
+* CTest suite
+* benchmarks
+* zero external runtime dependencies
+
+I would also explicitly mark networking/session management as **planned**, so the README doesn't oversell the project. Mature FIX engines generally separate parsing/validation from session and transport concerns. ([GitHub][1])
+
+## Replace `README.md` with this
+
 ````markdown
 # FlooFIX
 
-A modern C++20 FIX protocol parsing and validation core designed with
-low-latency systems principles, predictable memory usage, cache-friendly
-data structures, and minimal dynamic allocation in mind.
+A lightweight, allocation-conscious FIX protocol parsing and validation
+engine written in modern C++20.
 
-> **Current version:** `v0.2.0`
->
-> FlooFIX is currently a FIX parsing/validation core. Networking, FIX session
-> management, message encoding, and production-grade I/O are planned for
-> subsequent versions.
+FlooFIX is being built from the ground up with a focus on:
+
+- deterministic parsing
+- bounded memory usage
+- incremental data ingestion
+- zero-copy field representation where practical
+- explicit validation
+- simple, composable components
+- performance measurement
+
+> **Status:** Early development — v0.3.0
+
+FlooFIX is currently a FIX message parsing, ingestion, and validation core.
+It is **not yet a complete FIX session engine** and should not be considered
+production-ready.
 
 ---
 
-## Overview
+## Architecture
 
-FIX (Financial Information eXchange) is a tag-value based protocol commonly
-used for communication between trading systems, brokers, exchanges, and
-financial institutions.
+The current processing pipeline is:
 
-A typical FIX message looks like:
+```mermaid
+flowchart LR
 
-```text
-8=FIX.4.2|9=118|35=D|49=SENDER|56=TARGET|34=2|52=20240528-09:20:52|11=ORDERID|55=MSFT|54=1|38=1000|40=2|44=150.5|10=028|
+    A[Raw FIX bytes] --> B[Ingestion Buffer]
+
+    B --> C[FixIngestor]
+
+    C --> D{Complete FIX message?}
+
+    D -->|No| C
+    D -->|Yes| E[Parser]
+
+    E --> F[Tokenizer]
+
+    F --> G[FixMessage]
+
+    G --> H[Validator]
+
+    H --> I[FixEngine]
+
+    I --> J[Parsed + Validation Result]
 ````
 
-where `|` represents the FIX SOH delimiter (`0x01`).
+The important design principle is that the ingestion layer operates on bytes
+rather than assuming a particular transport.
 
-FlooFIX transforms this wire representation into a compact, fixed-capacity
-in-memory representation:
-
-```text
-Raw FIX Message
-      |
-      v
-+-------------+
-|  Tokenizer  |
-+-------------+
-      |
-      v
-+-------------+
-|    Parser   |
-+-------------+
-      |
-      v
-+----------------+
-|  FixMessage    |
-|                |
-| Tag -> Value   |
-+----------------+
-      |
-      v
-+-------------+
-|  Validator  |
-+-------------+
-      |
-      v
-ValidationResult
-```
-
----
-
-# Design Goals
-
-FlooFIX is being developed around several principles.
-
-### 1. C++20
-
-Use modern C++ language and library facilities where they improve:
-
-* type safety
-* compile-time guarantees
-* expressiveness
-* performance
-* ownership clarity
-
-Examples include:
-
-* `std::string_view`
-* `std::array`
-* `constexpr`
-* `[[nodiscard]]`
-* designated initialization
-* `noexcept`
-* fixed-width integer types
-* compile-time configuration
-
----
-
-### 2. Predictable memory usage
-
-The core parser should avoid unnecessary dynamic allocation.
-
-Instead of:
-
-```cpp
-std::vector<FixField>
-std::unordered_map<int, std::string>
-```
-
-FlooFIX currently uses:
-
-```cpp
-template <std::size_t MaxFields = 64>
-struct FixMessage {
-    std::array<FixField, MaxFields> fields;
-    std::uint16_t count;
-};
-```
-
-This provides:
-
-* fixed capacity
-* contiguous storage
-* predictable object size
-* no per-field allocation
-* cache-friendly sequential traversal
-
----
-
-### 3. Non-owning field values
-
-FIX field values are represented using:
-
-```cpp
-std::string_view
-```
-
-rather than copying the value into a new `std::string`.
-
-Conceptually:
-
-```text
-Network / Input Buffer
-+------------------------------------------------+
-| 8=FIX.4.2^A35=D^A55=MSFT^A54=1^A...          |
-+------------------------------------------------+
-       ^              ^
-       |              |
-       +--------------+
-          string_view
-```
-
-The parsed message refers to the original input buffer.
-
-Therefore the input buffer must remain alive for as long as the
-`FixMessage` is being used.
-
----
-
-# Architecture
-
-## Current architecture
+This allows the same core to eventually consume data from:
 
 ```mermaid
 flowchart TD
-    A["Raw FIX Message<br/>byte buffer"]
-    B["Tokenizer"]
-    C["Parser"]
-    D["FixMessage"]
-    E["Validator"]
-    F["ValidationResult"]
 
-    A --> B
-    B --> C
-    C --> D
+    A[TCP Socket]
+    B[File Replay]
+    C[Memory Buffer]
+    D[Test Data]
+
+    A --> E[Byte Stream]
+    B --> E
+    C --> E
     D --> E
-    E --> F
+
+    E --> F[FixIngestor]
+    F --> G[FixEngine]
 ```
 
-The core is deliberately separated into independent stages.
+Networking and file replay are planned layers and are not yet part of the
+current release.
 
 ---
 
-## Component responsibilities
+# Features
 
-| Component    | Responsibility                              |
-| ------------ | ------------------------------------------- |
-| `tokenizer`  | Locate FIX fields and delimiters            |
-| `parser`     | Convert tokens into `FixMessage`            |
-| `FixMessage` | Store parsed fields                         |
-| `validator`  | Validate FIX message structure and checksum |
-| `storage`    | Fixed-capacity field/message representation |
-| `tests`      | Regression and correctness testing          |
-| `benchmarks` | Performance and memory-layout measurements  |
+## FIX Message Representation
+
+FIX fields are represented using:
+
+```cpp
+struct FixField {
+    Tag tag;
+    std::string_view value;
+};
+```
+
+A message uses fixed-capacity storage:
+
+```cpp
+template <std::size_t MaxFields = 64>
+struct FixMessage;
+```
+
+This avoids dynamic allocation for the normal message representation.
+
+Example:
+
+```cpp
+fix::FixMessage<> message;
+
+message.push(35, "D");
+message.push(55, "MSFT");
+message.push(38, "1000");
+
+auto type = message.get(35);
+```
+
+---
+
+## Tokenization
+
+The tokenizer separates a raw FIX message into tag/value fields using the
+FIX SOH delimiter:
+
+```text
+8=FIX.4.2<SOH>
+9=97<SOH>
+35=D<SOH>
+49=SENDER<SOH>
+56=TARGET<SOH>
+```
+
+Conceptually:
+
+```mermaid
+flowchart LR
+
+    A["8=FIX.4.2<SOH>35=D<SOH>55=MSFT<SOH>"]
+        --> B[Tokenizer]
+
+    B --> C["Tag 8 / FIX.4.2"]
+    B --> D["Tag 35 / D"]
+    B --> E["Tag 55 / MSFT"]
+```
+
+The tokenizer is deliberately kept separate from higher-level message
+validation.
+
+---
+
+# Parser
+
+The parser orchestrates tokenization and field extraction.
+
+```mermaid
+flowchart TD
+
+    A[Raw FIX message]
+        --> B[Parser]
+
+    B --> C[Tokenizer]
+
+    C --> D[Fields]
+
+    D --> E[FixMessage]
+```
+
+The parser converts the wire representation into the internal
+`FixMessage` representation.
+
+---
+
+# Validation
+
+The validator operates on parsed FIX messages and checks protocol-level
+conditions implemented by FlooFIX.
+
+Validation errors are represented explicitly rather than thrown as exceptions.
+
+Example:
+
+```text
+Validation errors:
+    - ChecksumMismatch
+    - ...
+```
+
+This makes validation suitable for low-level/high-throughput processing where
+exceptions are undesirable in the normal message path.
+
+---
+
+# Incremental Ingestion
+
+FlooFIX contains a bounded ingestion buffer designed for data arriving in
+arbitrary chunks.
+
+A FIX message does not need to arrive in one `feed()` call.
+
+For example:
+
+```text
+TCP read #1
+    |
+    v
+8=FIX.4.2<SOH>9=97<SOH>35=D
+    |
+    | incomplete
+    v
+wait for more data
+
+TCP read #2
+    |
+    v
+<SOH>49=SENDER<SOH>...<SOH>10=241<SOH>
+    |
+    v
+complete FIX message
+```
+
+The ingestion layer reports states such as:
+
+```cpp
+fix::IngestionStatus::NeedMoreData
+fix::IngestionStatus::MessageReady
+fix::IngestionStatus::BufferFull
+fix::IngestionStatus::InvalidMessage
+```
+
+This allows the same ingestion core to work with future TCP/file/replay
+sources without coupling the parser to a specific transport.
+
+---
+
+# FixEngine
+
+`FixEngine` is the orchestration layer connecting the individual components.
+
+```mermaid
+flowchart TD
+
+    A[Input bytes]
+        --> B[FixIngestor]
+
+    B --> C{Message ready?}
+
+    C -->|No| D[Wait for more bytes]
+
+    C -->|Yes| E[Parser]
+
+    E --> F[Tokenizer]
+
+    F --> G[FixMessage]
+
+    G --> H[Validator]
+
+    H --> I[FixEngine Result]
+```
+
+The engine is intentionally kept separate from transport.
+
+Future transport implementations can therefore feed bytes into the same
+engine.
+
+---
+
+# Memory Model
+
+The core data structures use bounded storage.
+
+For example:
+
+```cpp
+template <std::size_t MaxFields = 64>
+struct FixMessage;
+```
+
+and:
+
+```cpp
+template <std::size_t Capacity = 64 * 1024>
+class IngestionBuffer;
+```
+
+This gives the application explicit upper bounds for:
+
+* number of fields
+* ingestion buffer size
+
+The current implementation favors predictable memory behavior over
+unbounded dynamic containers.
+
+---
+
+# Performance
+
+FlooFIX contains dedicated benchmarks for the core data structures.
+
+Example benchmark results from the development environment:
+
+```text
+FixMessage construction       ~2.23 ns/op
+push 12 FIX fields            ~2.28 ns/op
+iterate 12 FIX fields         ~8.58 ns/op
+find tag 55                   ~7.42 ns/op
+get tag 55                    ~7.34 ns/op
+construct 1 field             ~2.08 ns/op
+construct 4 fields            ~1.87 ns/op
+construct 8 fields            ~1.88 ns/op
+construct 12 fields           ~1.88 ns/op
+```
+
+These numbers are machine-dependent and are provided only as development
+measurements, not performance guarantees.
+
+Run the benchmarks yourself before making performance comparisons.
 
 ---
 
@@ -193,17 +339,24 @@ The core is deliberately separated into independent stages.
 FlooFIX/
 │
 ├── CMakeLists.txt
+├── README.md
+├── main.cpp
 │
 ├── inc/
+│   ├── fix_constant.hpp
+│   ├── ingestion.hpp
 │   ├── parser.hpp
 │   ├── storage.hpp
 │   ├── tokenizer.hpp
-│   └── validator.hpp
+│   ├── validator.hpp
+│   └── fix_engine.hpp
 │
 ├── src/
+│   ├── ingestion.cpp
 │   ├── parser.cpp
 │   ├── tokenizer.cpp
-│   └── validator.cpp
+│   ├── validator.cpp
+│   └── fix_engine.cpp
 │
 ├── tests/
 │   ├── CMakeLists.txt
@@ -211,443 +364,48 @@ FlooFIX/
 │   ├── parser_test.cpp
 │   ├── validator_test.cpp
 │   ├── storage_test.cpp
-│   └── storage_layout_test.cpp
+│   ├── storage_layout_test.cpp
+│   ├── ingestion_test.cpp
+│   └── fix_engine_test.cpp
 │
 └── benchmarks/
-    ├── CMakeLists.txt
-    └── storage_bench.cpp
+    └── ...
 ```
 
 ---
 
-# Core Data Structures
-
-## `FixField`
-
-A single FIX field is represented as:
-
-```cpp
-struct FixField {
-    Tag tag{0};
-    std::string_view value{};
-
-    [[nodiscard]] constexpr bool empty() const noexcept {
-        return value.empty();
-    }
-};
-```
-
-A FIX field such as:
-
-```text
-55=MSFT
-```
-
-becomes conceptually:
-
-```text
-FixField
-+-------------------------+
-| tag   = 55              |
-| value = "MSFT"          |
-+-------------------------+
-```
-
-The `"MSFT"` string is not copied.
-
----
-
-## `FixMessage`
-
-The current message representation is:
-
-```cpp
-template <std::size_t MaxFields = 64>
-struct FixMessage {
-    std::array<FixField, MaxFields> fields{};
-    std::uint16_t count{0};
-};
-```
-
-Conceptually:
-
-```mermaid
-flowchart LR
-    M["FixMessage<64>"]
-
-    M --> F0["fields[0]"]
-    M --> F1["fields[1]"]
-    M --> F2["fields[2]"]
-    M --> F3["..."]
-    M --> F63["fields[63]"]
-
-    F0 --> T0["Tag"]
-    F0 --> V0["string_view"]
-
-    F1 --> T1["Tag"]
-    F1 --> V1["string_view"]
-
-    F2 --> T2["Tag"]
-    F2 --> V2["string_view"]
-```
-
-The important property is that the fields live in a contiguous
-`std::array`.
-
----
-
-# Why Not `std::unordered_map`?
-
-A traditional implementation might use:
-
-```cpp
-std::unordered_map<int, std::string>
-```
-
-This is convenient, but it introduces several costs:
-
-* dynamic allocation
-* hash computation
-* pointer chasing
-* poor spatial locality
-* larger memory footprint
-* unpredictable access patterns
-
-FlooFIX instead uses:
-
-```cpp
-std::array<FixField, MaxFields>
-```
-
-and performs a linear scan for tag lookup.
-
-For a normal FIX message containing a relatively small number of fields,
-this can be a reasonable trade-off.
-
-```text
-unordered_map
-
-FixMessage
-   |
-   v
-bucket array
-   |
-   +--> node
-   |      |
-   |      +--> string
-   |
-   +--> node
-          |
-          +--> string
-
-
-FlooFIX
-
-FixMessage
-   |
-   v
-+------+------+------+------+------+-----+
-| F0   | F1   | F2   | F3   | ... | F63 |
-+------+------+------+------+------+-----+
-```
-
-The second representation has significantly better spatial locality.
-
----
-
-# Memory Layout
-
-One of the project's design goals is to understand how data layout affects
-performance.
-
-The current measurements on the development machine are:
-
-```text
-sizeof(FixField)       = 24 bytes
-alignof(FixField)      = 8 bytes
-
-sizeof(FixMessage<8>)  = 200 bytes
-sizeof(FixMessage<64>) = 1544 bytes
-
-alignof(FixMessage<64>) = 8 bytes
-```
-
-These measurements are intentionally tracked.
-
-The goal is not to optimize based purely on intuition.
-
-Instead:
-
-```mermaid
-flowchart LR
-    A["Data structure"]
-    B["Measure"]
-    C["Profile"]
-    D["Identify bottleneck"]
-    E["Change layout"]
-    F["Measure again"]
-
-    A --> B --> C --> D --> E --> F
-    F --> B
-```
-
-This creates a measurable optimization loop.
-
----
-
-# Memory-Oriented Design
-
-FlooFIX takes inspiration from the principles discussed in:
-
-> **What Every Programmer Should Know About Memory**
-
-The important principles being applied are:
-
-### Spatial locality
-
-Keep related data close together.
-
-```cpp
-std::array<FixField, 64>
-```
-
-provides contiguous storage.
-
----
-
-### Temporal locality
-
-Frequently accessed data should remain useful in nearby cache levels.
-
-For example:
-
-```cpp
-message.find(55);
-message.find(54);
-message.find(38);
-```
-
-operates over the same small contiguous data structure.
-
----
-
-### Avoid unnecessary allocations
-
-Instead of:
-
-```cpp
-std::string value = token;
-```
-
-the parser can retain:
-
-```cpp
-std::string_view value;
-```
-
-when ownership is not required.
-
----
-
-### Reduce pointer chasing
-
-Pointer-heavy structures such as:
-
-```text
-hash table
-    |
-    v
-heap node
-    |
-    v
-heap string
-```
-
-can cause additional cache misses.
-
-FlooFIX prefers compact contiguous structures where practical.
-
----
-
-# Tokenization
-
-The tokenizer's job is to identify FIX fields.
-
-For:
-
-```text
-35=D^A55=MSFT^A54=1^A
-```
-
-the tokenizer identifies:
-
-```text
-35=D
-55=MSFT
-54=1
-```
-
-without requiring every field to become an owning string.
-
-Conceptually:
-
-```mermaid
-flowchart LR
-    A["Input buffer"]
-    B["Find SOH delimiter"]
-    C["Find '='"]
-    D["Tag"]
-    E["Value"]
-
-    A --> B
-    B --> C
-    C --> D
-    C --> E
-```
-
----
-
-# Parsing
-
-The parser converts tokenized fields into the fixed-capacity message:
-
-```mermaid
-sequenceDiagram
-    participant B as Input Buffer
-    participant T as Tokenizer
-    participant P as Parser
-    participant M as FixMessage
-
-    B->>T: raw bytes
-    T->>T: locate delimiter
-    T->>T: locate '='
-    T->>P: tag + value view
-    P->>M: push(tag, value)
-    M-->>P: success
-    P-->>B: ParseResult
-```
-
-No field-level `std::string` allocation is required by the core representation.
-
----
-
-# Validation
-
-Validation occurs after parsing.
-
-Current validation includes checks around:
-
-* message structure
-* required header fields
-* message type
-* body requirements
-* checksum
-* malformed fields
-
-The validation flow is:
-
-```mermaid
-flowchart TD
-    A["FixMessage"]
-    B{"Header valid?"}
-    C{"Body valid?"}
-    D{"Checksum valid?"}
-    E["Validation successful"]
-    F["Validation errors"]
-
-    A --> B
-    B -- No --> F
-    B -- Yes --> C
-    C -- No --> F
-    C -- Yes --> D
-    D -- No --> F
-    D -- Yes --> E
-```
-
----
-
-# Error Handling
-
-The project uses explicit result structures instead of exceptions for
-normal parsing/validation failures.
-
-Example:
-
-```cpp
-struct ParseError {
-    enum class Code : std::uint8_t {
-        None,
-        TooManyFields,
-        InvalidTag,
-        EmptyTag,
-        MissingDelimiter
-    };
-
-    Code code{Code::None};
-    std::size_t position{0};
-
-    [[nodiscard]] constexpr bool ok() const noexcept {
-        return code == Code::None;
-    }
-};
-```
-
-This makes expected protocol errors explicit and avoids using exceptions
-as normal control flow.
-
----
-
-# Testing
-
-FlooFIX uses CTest through CMake.
-
-Current test suites:
-
-```text
-floofix_tokenizer_tests
-floofix_parser_tests
-floofix_validator_tests
-floofix_storage_tests
-floofix_storage_layout_tests
-```
-
-Current status:
-
-```text
-5/5 tests passed
-0 tests failed
-```
-
-Run the tests with:
-
-```bash
-ctest --test-dir build --output-on-failure
-```
-
----
-
-# Building
-
-## Requirements
+# Requirements
 
 * C++20 compiler
 * CMake
-* Make/Ninja
-* Linux, Windows, or another supported platform
+* Make or another supported CMake build backend
 
-The project is currently being developed primarily with GCC on Linux.
+Tested during development with:
+
+```text
+GNU C++ 14.x
+CMake
+Linux
+```
 
 ---
 
-## Configure
+# Build
+
+Clone the repository:
+
+```bash
+git clone https://github.com/DrunkTrader/FixEngine.git
+cd FixEngine
+```
+
+Configure:
 
 ```bash
 cmake -S . -B build
 ```
 
----
-
-## Build
+Build:
 
 ```bash
 cmake --build build -j$(nproc)
@@ -676,15 +434,31 @@ Run:
 ctest --test-dir build --output-on-failure
 ```
 
+Current test suite:
+
+```text
+7 test targets
+100% passing
+```
+
+The suite covers:
+
+* tokenizer behavior
+* parser behavior
+* validation
+* storage
+* storage layout
+* incremental ingestion
+* FixEngine integration
+
 ---
 
-# Build With Benchmarks
+# Benchmarks
 
 Enable benchmarks:
 
 ```bash
 cmake -S . -B build \
-    -DFLOOFIX_BUILD_TESTS=ON \
     -DFLOOFIX_BUILD_BENCHMARKS=ON
 ```
 
@@ -694,7 +468,7 @@ Build:
 cmake --build build -j$(nproc)
 ```
 
-Run the current storage benchmark:
+Run the benchmark executable:
 
 ```bash
 ./build/benchmarks/floofix_storage_bench
@@ -702,489 +476,199 @@ Run the current storage benchmark:
 
 ---
 
-# Current Benchmark Baseline
+# Example FIX Message
 
-The current storage microbenchmark reports approximately:
-
-| Operation                 | ns/op |
-| ------------------------- | ----: |
-| `FixMessage` construction |  2.23 |
-| Push 12 fields            |  2.28 |
-| Iterate 12 fields         |  8.58 |
-| Find tag 55               |  7.42 |
-| Get tag 55                |  7.34 |
-| Construct 1 field         |  2.08 |
-| Construct 4 fields        |  1.87 |
-| Construct 8 fields        |  1.88 |
-| Construct 12 fields       |  1.88 |
-
-These are **development-machine microbenchmark results**, not guaranteed
-production latency numbers.
-
-They exist primarily as a regression baseline.
-
----
-
-# Benchmark Philosophy
-
-Performance work in FlooFIX follows:
-
-```mermaid
-flowchart TD
-    A["Implement"]
-    B["Correctness Tests"]
-    C["Benchmark"]
-    D["Profile"]
-    E["Identify Hot Path"]
-    F["Optimize"]
-    G["Benchmark Again"]
-
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    G --> C
-```
-
-We do not assume that a particular C++ construct is faster.
-
-We measure it.
-
----
-
-# Current Limitations
-
-FlooFIX is **not yet a complete FIX engine**.
-
-The following components are not currently implemented:
-
-* TCP networking
-* asynchronous I/O
-* FIX session management
-* Logon/Logout
-* Heartbeat/TestRequest
-* sequence number management
-* ResendRequest
-* SequenceReset
-* Reject handling
-* message encoding
-* BodyLength generation
-* CheckSum generation
-* repeating FIX groups
-* production connection management
-
-The current executable is primarily a development/demo target.
-
----
-
-# Planned Architecture
-
-The long-term architecture is:
-
-```mermaid
-flowchart TD
-    I["Input Layer"]
-
-    I1["TCP"]
-    I2["File"]
-    I3["stdin"]
-    I4["Application API"]
-
-    I --> I1
-    I --> I2
-    I --> I3
-    I --> I4
-
-    I1 --> B["Input Buffer"]
-    I2 --> B
-    I3 --> B
-    I4 --> B
-
-    B --> T["Tokenizer"]
-    T --> P["Parser"]
-    P --> M["FixMessage"]
-    M --> V["Validator"]
-
-    V --> S["FIX Session Layer"]
-
-    S --> E["Encoder"]
-    E --> O["Output"]
-
-    O --> N["TCP / Network"]
-```
-
-The key architectural principle is that the parser should not care whether
-the bytes came from:
-
-* a socket
-* a file
-* stdin
-* another application
-* a benchmark
-
-All inputs should eventually feed the same core parsing interface.
-
----
-
-# Future Performance Architecture
-
-The eventual low-latency pipeline is intended to look like:
-
-```mermaid
-flowchart LR
-    N["Network"]
-    R["Receive Buffer"]
-    T["Tokenizer"]
-    P["Parser"]
-    V["Validator"]
-    S["Session"]
-    A["Application"]
-
-    N --> R
-    R --> T
-    T --> P
-    P --> V
-    V --> S
-    S --> A
-```
-
-The performance objectives are:
-
-* minimize allocations
-* minimize copying
-* improve cache locality
-* reduce pointer chasing
-* maintain predictable object lifetimes
-* minimize unnecessary branches
-* keep hot data compact
-* avoid unnecessary synchronization
-* measure cache behavior rather than guessing
-* benchmark complete hot paths
-
----
-
-# Memory Ownership Model
-
-An important property of the current design is that parsed fields can refer
-to the original input buffer.
-
-```mermaid
-flowchart TD
-    B["Input Buffer<br/>owns bytes"]
-
-    M["FixMessage<br/>does not own bytes"]
-
-    F1["FixField"]
-    F2["FixField"]
-    F3["FixField"]
-
-    B --> F1
-    B --> F2
-    B --> F3
-
-    M --> F1
-    M --> F2
-    M --> F3
-```
-
-Therefore:
+A typical FIX message is represented on the wire as:
 
 ```text
-Input buffer lifetime
-        >=
-FixMessage lifetime
+8=FIX.4.2<SOH>
+9=97<SOH>
+35=D<SOH>
+49=SENDER<SOH>
+56=TARGET<SOH>
+34=1<SOH>
+52=20240528-09:20:52<SOH>
+11=ORDERID<SOH>
+55=MSFT<SOH>
+54=1<SOH>
+38=1000<SOH>
+40=2<SOH>
+44=150.5<SOH>
+10=241<SOH>
 ```
 
-The message must not outlive the storage referenced by its `string_view`s.
+Where `<SOH>` represents byte `0x01`.
 
-This ownership rule is fundamental to the zero-copy design.
+The processing pipeline is:
+
+```mermaid
+sequenceDiagram
+
+    participant Input
+    participant Ingestor
+    participant Parser
+    participant Tokenizer
+    participant Validator
+    participant Engine
+
+    Input->>Ingestor: raw bytes
+    Ingestor->>Ingestor: accumulate bytes
+    Ingestor->>Parser: complete message
+    Parser->>Tokenizer: tokenize fields
+    Tokenizer-->>Parser: Fix fields
+    Parser-->>Validator: FixMessage
+    Validator-->>Engine: validation result
+    Engine-->>Input: processing result
+```
 
 ---
 
-# Why Fixed-Capacity Storage?
+# Design Goals
 
-A FIX message usually contains a relatively small number of fields.
+FlooFIX is being developed around several engineering goals.
 
-Using:
+### 1. Bounded memory
 
-```cpp
-FixMessage<64>
-```
+Core data structures should have explicit capacity limits where practical.
 
-gives a deterministic upper bound.
+### 2. Incremental processing
 
-Advantages:
+The engine must correctly handle messages arriving in multiple chunks.
 
-```text
-No dynamic growth
-No vector reallocation
-No per-field allocation
-Contiguous memory
-Predictable layout
-```
+### 3. Separation of concerns
 
-Trade-off:
+Transport, ingestion, parsing, tokenization, storage, and validation should
+remain independently testable.
 
-```text
-More memory reserved than strictly necessary
-Maximum field count is bounded
-```
+### 4. Low allocation overhead
 
-The correct capacity will eventually be determined using real workloads
-rather than arbitrary assumptions.
+The core message representation uses `std::string_view` for field values,
+allowing fields to reference the underlying input data.
+
+### 5. Deterministic behavior
+
+The core processing path should have explicit states and error results rather
+than relying on exceptions for normal protocol failures.
+
+### 6. Measurable performance
+
+Important data structures and operations should have benchmarks rather than
+performance claims based purely on intuition.
 
 ---
 
-# Version History
+# Current Status
 
-## v0.2.0
+## v0.3.0
 
-Current development milestone.
+### Implemented
 
-### Core
+* [x] C++20 build system
+* [x] FIX field representation
+* [x] Fixed-capacity `FixMessage`
+* [x] Field lookup
+* [x] Field insertion
+* [x] FIX tokenizer
+* [x] FIX parser
+* [x] FIX validation
+* [x] Incremental ingestion buffer
+* [x] FIX message boundary detection
+* [x] `BodyLength` handling
+* [x] Checksum field boundary detection
+* [x] `FixEngine` orchestration
+* [x] Unit/integration tests
+* [x] Storage layout tests
+* [x] Core benchmarks
 
-* C++20 parsing architecture
-* FIX tokenizer
-* FIX parser
-* FIX validator
-* fixed-capacity `FixMessage`
-* non-owning `std::string_view` field values
-* explicit parsing errors
-* explicit validation results
+### Not implemented yet
 
-### Testing
-
-* tokenizer tests
-* parser tests
-* validator tests
-* storage tests
-* memory-layout tests
-* CTest integration
-
-### Performance
-
-* initial storage benchmark suite
-* object-size measurements
-* alignment measurements
-* baseline microbenchmarks
-
-### Build
-
-* CMake
-* optional tests
-* optional benchmarks
-* optional sanitizer configuration
+* [ ] TCP transport
+* [ ] File/replay data source
+* [ ] FIX session layer
+* [ ] Logon/Logout
+* [ ] Heartbeat/TestRequest
+* [ ] Sequence number management
+* [ ] ResendRequest / SequenceReset
+* [ ] Message generation/serialization
+* [ ] FIX data dictionary
+* [ ] Session configuration
+* [ ] TLS transport
+* [ ] Production deployment hardening
 
 ---
 
 # Roadmap
 
-## v0.3.0 — Input Layer
-
-```text
-stdin
-file
-buffer API
-```
-
-Goal:
-
-Remove the dependency on hardcoded demo messages.
-
----
-
-## v0.4.0 — FIX Encoder
-
-Implement:
-
-```text
-FixMessage
-    |
-    +--> BodyLength
-    |
-    +--> fields
-    |
-    +--> CheckSum
-    |
-    v
-wire-format FIX message
-```
-
----
-
-## v0.5.0 — Session Layer
-
-Implement:
-
-* Logon
-* Logout
-* Heartbeat
-* TestRequest
-* sequence numbers
-* Reject
-* ResendRequest
-* SequenceReset
-
----
-
-## v0.6.0 — Networking
-
-Add:
-
-* TCP transport
-* receive buffers
-* send buffers
-* message framing
-* connection lifecycle
-
----
-
-## v0.7.0 — Performance Engineering
-
-Measure:
-
-* allocations
-* cache misses
-* branch misses
-* instructions
-* cycles
-* memory bandwidth
-* latency distributions
-
-Tools may include:
-
-```text
-perf
-valgrind
-heaptrack
-cachegrind
-Compiler Explorer
-```
-
----
-
-## v1.0.0 — FIX Engine
-
-Target:
-
 ```mermaid
 flowchart LR
-    A["TCP"] --> B["Receive Buffer"]
-    B --> C["Tokenizer"]
-    C --> D["Parser"]
-    D --> E["Validator"]
-    E --> F["Session Engine"]
-    F --> G["Application"]
-    G --> H["Encoder"]
-    H --> I["TCP"]
+
+    A["v0.2.0<br/>Parsing Core"]
+    --> B["v0.3.0<br/>Ingestion + FixEngine"]
+
+    B --> C["v0.4.0<br/>File Replay"]
+
+    C --> D["v0.5.0<br/>TCP Transport"]
+
+    D --> E["v0.6.0<br/>FIX Session Layer"]
+
+    E --> F["v0.7.0<br/>Message Dispatch"]
+
+    F --> G["v0.8.0<br/>Performance + Hardening"]
+
+    G --> H["v1.0.0<br/>Stable Core"]
 ```
 
-The goal is a complete, tested, benchmarked, production-oriented FIX
-engine rather than simply a FIX parser.
+The immediate next milestone is a deterministic file/replay input source.
+
+After that, transport can be introduced without changing the core parsing
+pipeline.
 
 ---
 
-# Development Principles
+# Why Another FIX Engine?
 
-FlooFIX follows a few rules during development.
+FlooFIX is primarily an engineering project focused on understanding and
+implementing the lower-level mechanics of FIX processing in modern C++.
 
-### Correctness before optimization
+The project emphasizes:
 
-```text
-Correct
-  ↓
-Test
-  ↓
-Measure
-  ↓
-Optimize
-  ↓
-Measure again
-```
+* memory behavior
+* data ownership
+* incremental parsing
+* bounded storage
+* explicit state transitions
+* benchmark-driven optimization
+* clean separation between transport and protocol processing
 
-### Don't optimize based on syntax
-
-Modern C++ does not automatically mean faster C++.
-
-For example:
-
-```cpp
-std::unordered_map
-```
-
-is not inherently bad.
-
-And:
-
-```cpp
-std::array
-```
-
-is not inherently fast.
-
-The important question is how the resulting machine code interacts with:
-
-* CPU caches
-* branch prediction
-* memory hierarchy
-* allocation behavior
-* workload characteristics
-
-Therefore performance changes should be benchmarked.
+It is not intended to replace established production FIX engines at this
+stage.
 
 ---
 
-# Contributing
+# Development
 
-Before submitting changes:
+Create a feature branch:
 
 ```bash
-cmake -S . -B build \
-    -DFLOOFIX_BUILD_TESTS=ON \
-    -DFLOOFIX_BUILD_BENCHMARKS=ON
+git checkout -b feature/my-feature
+```
 
+Build:
+
+```bash
+cmake -S . -B build
 cmake --build build -j$(nproc)
+```
 
+Run tests:
+
+```bash
 ctest --test-dir build --output-on-failure
 ```
 
-Performance-sensitive changes should include benchmark results whenever
-possible.
+Run benchmarks when relevant:
 
----
-
-# License
-
-Add the project's license here.
-
----
-
-# Status
-
-FlooFIX is an actively developed C++20 systems project.
-
-Current focus:
-
-```text
-FIX parsing
-     ↓
-FIX validation
-     ↓
-memory-efficient storage
-     ↓
-input abstraction
-     ↓
-FIX encoding
-     ↓
-session management
-     ↓
-networking
-     ↓
-performance engineering
+```bash
+./build/benchmarks/floofix_storage_bench
 ```
-
-The current `v0.2.0` milestone establishes the parsing, validation,
-testing, and initial performance-measurement foundation.
 
