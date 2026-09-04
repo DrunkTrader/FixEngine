@@ -1,5 +1,36 @@
-**/feature_requirements.txt
-**/build
-**/.vscodecompile_flags.txt
-*.exe
+```
+# Compiled and build artifacts
+*.o
+*.obj
+*.out
+build/
 dist/
+
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+.gradle/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+```
