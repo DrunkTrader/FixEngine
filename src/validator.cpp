@@ -1,357 +1,246 @@
 #include "validator.hpp"
-
-#include <array>
-#include <limits>
-#include <span>
+#include "tokenizer.hpp"
+#include <unordered_map>
+#include <sstream>
+#include <algorithm>
 
 namespace fix {
-
-namespace {
-
-struct MessageRule {
-    std::string_view type;
-    std::span<const Tag> required_tags;
-};
-
-inline constexpr std::array<Tag, 2> logon_tags{
-    98,
-    108
-};
-
-inline constexpr std::array<Tag, 5> new_order_tags{
-    11,
-    55,
-    54,
-    38,
-    40
-};
-
-inline constexpr std::array<Tag, 7> execution_report_tags{
-    37,
-    17,
-    39,
-    150,
-    55,
-    54,
-    38
-};
-
-inline constexpr std::array<MessageRule, 3> message_rules{{
-    MessageRule{
-        "A",
-        std::span<const Tag>{
-            logon_tags.data(),
-            logon_tags.size()
-        }
-    },
-
-    MessageRule{
-        "D",
-        std::span<const Tag>{
-            new_order_tags.data(),
-            new_order_tags.size()
-        }
-    },
-
-    MessageRule{
-        "8",
-        std::span<const Tag>{
-            execution_report_tags.data(),
-            execution_report_tags.size()
-        }
+    
+    ValidationResult Validator::validate(const std::string &raw_msg, const FixMessage &message) const {
+        ValidationResult result;
+        validate_header(message, result);
+        validate_body(message, result);
+        validate_body_length(raw_msg, message, result);
+        validate_checksum(raw_msg, message, result);
+        result.ok = result.errors.empty();
+        return result;
     }
-}};
 
-inline constexpr std::array<Tag, 7> required_header_tags{
-    8,
-    9,
-    35,
-    49,
-    56,
-    34,
-    52
-};
+    ParseResult Validator::validateWithParse(const std::string &raw_msg) const {
+        ParseResult parse_result;
+        
+        // Preprocess and tokenize
+        std::string processed_msg = preprocess_delimeter(raw_msg);
+        std::vector<std::string> tokens = tokenize(processed_msg);
+        
+        // Parse with duplicate detection
+        std::set<int> seen_tags;
+        for (const auto& token : tokens) {
+            FixField field = splitField(token);
+            if (field.tag != -1) {
+                if (seen_tags.count(field.tag) > 0) {
+                    parse_result.duplicate_tags.insert(field.tag);
+                    parse_result.has_duplicates = true;
+                } else {
+                    seen_tags.insert(field.tag);
+                    parse_result.message[field.tag] = field.value;
+                }
+            }
+        }
+        
+        // Validate
+        parse_result.validation = validate(raw_msg, parse_result.message);
+        
+        // Add duplicate errors
+        validate_duplicates(parse_result.duplicate_tags, parse_result.validation);
+        
+        return parse_result;
+    }
 
-[[nodiscard]] constexpr const MessageRule* find_rule(
-    std::string_view msg_type) noexcept {
-
-    for (const auto& rule : message_rules) {
-        if (rule.type == msg_type) {
-            return &rule;
+    void Validator::validate_header(const FixMessage &message, ValidationResult &result) const {
+        const int required_tags[] = {8, 9, 35, 49, 56, 34, 52};
+        for (const int tag : required_tags) {
+            if (message.find(tag) == message.end()) {
+                ValidationError err;
+                err.message = "Missing required header tag: " + std::to_string(tag);
+                err.tag = tag;
+                result.errors.push_back(err);
+            }
         }
     }
 
-    return nullptr;
-}
-
-[[nodiscard]] constexpr ValidationErrorCode
-missing_header_error(Tag tag) noexcept {
-
-    switch (tag) {
-        case 8:
-            return ValidationErrorCode::MissingBeginString;
-
-        case 9:
-            return ValidationErrorCode::MissingBodyLength;
-
-        case 35:
-            return ValidationErrorCode::MissingMsgType;
-
-        case 49:
-            return ValidationErrorCode::MissingSenderCompId;
-
-        case 56:
-            return ValidationErrorCode::MissingTargetCompId;
-
-        case 34:
-            return ValidationErrorCode::MissingMsgSeqNum;
-
-        case 52:
-            return ValidationErrorCode::MissingSendingTime;
-
-        default:
-            return ValidationErrorCode::None;
-    }
-}
-
-} // namespace
-
-ValidationResult<Validator::max_errors> Validator::validate(
-    std::string_view raw_message,
-    const FixMessage<>& message) const noexcept {
-
-    ValidationResult<max_errors> result{};
-
-    validate_header(message, result);
-    validate_body(message, result);
-    validate_checksum(raw_message, message, result);
-
-    return result;
-}
-
-void Validator::validate_header(
-    const FixMessage<>& message,
-    ValidationResult<max_errors>& result) noexcept {
-
-    for (const Tag tag : required_header_tags) {
-
-        if (message.has(tag)) {
-            continue;
-        }
-
-        if (!result.add(
-                missing_header_error(tag),
-                tag)) {
-
+    void Validator::validate_body(const FixMessage &message, ValidationResult &result) const {
+        auto msg_type_it = message.find(35);
+        if (msg_type_it == message.end()) {
+            ValidationError err;
+            err.message = "Missing MsgType (35) for body validation";
+            err.tag = 35;
+            result.errors.push_back(err);
             return;
         }
-    }
-}
 
-void Validator::validate_body(
-    const FixMessage<>& message,
-    ValidationResult<max_errors>& result) noexcept {
+        const std::string &msg_type = msg_type_it->second;
+        static const std::unordered_map<std::string, std::vector<int>> required_by_type = {
+            {"D", {11, 55, 54, 38, 40}},
+            {"A", {98, 108}},
+            {"8", {37, 17, 39, 150, 55, 54, 38}}
+        };
 
-    const auto* msg_type_field =
-        message.find(35);
-
-    if (msg_type_field == nullptr) {
-        return;
-    }
-
-    const MessageRule* rule =
-        find_rule(msg_type_field->value);
-
-    if (rule == nullptr) {
-
-        static_cast<void>(
-            result.add(
-                ValidationErrorCode::UnknownMessageType,
-                35));
-
-        return;
-    }
-
-    for (const Tag tag : rule->required_tags) {
-
-        if (message.has(tag)) {
-            continue;
-        }
-
-        if (!result.add(
-                ValidationErrorCode::MissingBodyTag,
-                tag)) {
-
+        auto rule_it = required_by_type.find(msg_type);
+        if (rule_it == required_by_type.end()) {
+            ValidationError err;
+            err.message = "No body validation rules for MsgType: " + msg_type;
+            err.tag = 35;
+            err.field_value = msg_type;
+            result.errors.push_back(err);
             return;
         }
-    }
-}
 
-void Validator::validate_checksum(
-    std::string_view raw_message,
-    const FixMessage<>& message,
-    ValidationResult<max_errors>& result) noexcept {
-
-    const auto* checksum_field =
-        message.find(10);
-
-    if (checksum_field == nullptr) {
-
-        static_cast<void>(
-            result.add(
-                ValidationErrorCode::MissingChecksum,
-                10));
-
-        return;
-    }
-
-    std::uint32_t provided_checksum = 0;
-
-    if (!parse_uint(
-            checksum_field->value,
-            provided_checksum)) {
-
-        static_cast<void>(
-            result.add(
-                ValidationErrorCode::InvalidChecksum,
-                10));
-
-        return;
-    }
-
-    if (provided_checksum > 255U) {
-
-        static_cast<void>(
-            result.add(
-                ValidationErrorCode::InvalidChecksum,
-                10));
-
-        return;
-    }
-
-    const std::uint32_t expected_checksum =
-        compute_checksum(raw_message);
-
-    if (expected_checksum ==
-        std::numeric_limits<std::uint32_t>::max()) {
-
-        static_cast<void>(
-            result.add(
-                ValidationErrorCode::MissingChecksum,
-                10));
-
-        return;
-    }
-
-    if (expected_checksum != provided_checksum) {
-
-        static_cast<void>(
-            result.add(
-                ValidationErrorCode::ChecksumMismatch,
-                10));
-    }
-}
-
-std::uint32_t Validator::compute_checksum(
-    std::string_view raw_message) noexcept {
-
-    std::size_t checksum_position =
-        std::string_view::npos;
-
-    /*
-     * CheckSum must be the final FIX field.
-     *
-     * Search for a real field boundary:
-     *
-     *   SOH + "10="
-     *
-     * rather than searching for "10=" anywhere
-     * inside the message.
-     */
-
-    if (raw_message.starts_with("10=")) {
-        checksum_position = 0;
-    } else {
-
-        std::size_t position = 0;
-
-        while (position < raw_message.size()) {
-
-            const std::size_t soh =
-                raw_message.find(soh_del, position);
-
-            if (soh == std::string_view::npos) {
-                break;
+        for (const int tag : rule_it->second) {
+            if (message.find(tag) == message.end()) {
+                ValidationError err;
+                err.message = "Missing required body tag for MsgType " + msg_type + ": " + std::to_string(tag);
+                err.tag = tag;
+                result.errors.push_back(err);
             }
-
-            const std::size_t next =
-                soh + 1;
-
-            if (next + 3 <= raw_message.size() &&
-                raw_message[next] == '1' &&
-                raw_message[next + 1] == '0' &&
-                raw_message[next + 2] == '=') {
-
-                checksum_position = next;
-                break;
-            }
-
-            position = next;
         }
     }
 
-    if (checksum_position ==
-        std::string_view::npos) {
+    void Validator::validate_body_length(const std::string &raw_msg, const FixMessage &message, ValidationResult &result) const {
+        auto body_length_it = message.find(9);
+        if (body_length_it == message.end()) {
+            ValidationError err;
+            err.message = "Missing BodyLength tag (9)";
+            err.tag = 9;
+            result.errors.push_back(err);
+            return;
+        }
 
-        return std::numeric_limits<std::uint32_t>::max();
+        int provided_body_length = -1;
+        try {
+            provided_body_length = std::stoi(body_length_it->second);
+        } catch (const std::exception &) {
+            ValidationError err;
+            err.message = "Invalid BodyLength value in tag 9: " + body_length_it->second;
+            err.tag = 9;
+            err.field_value = body_length_it->second;
+            result.errors.push_back(err);
+            return;
+        }
+
+        int calculated_body_length = calculateBodyLength(raw_msg);
+        if (calculated_body_length < 0) {
+            ValidationError err;
+            err.message = "Could not calculate body length from message";
+            result.errors.push_back(err);
+            return;
+        }
+
+        if (provided_body_length != calculated_body_length) {
+            ValidationError err;
+            std::ostringstream oss;
+            oss << "BodyLength mismatch: tag 9 specifies " << provided_body_length 
+                << ", but actual body length is " << calculated_body_length;
+            err.message = oss.str();
+            err.tag = 9;
+            err.field_value = body_length_it->second;
+            result.errors.push_back(err);
+        }
     }
 
-    std::uint32_t sum = 0;
+    void Validator::validate_checksum(const std::string &raw_msg, const FixMessage &message, ValidationResult &result) const {
+        auto checksum_it = message.find(10);
+        if (checksum_it == message.end()) {
+            ValidationError err;
+            err.message = "Missing checksum tag (10)";
+            err.tag = 10;
+            result.errors.push_back(err);
+            return;
+        }
 
-    for (std::size_t i = 0;
-         i < checksum_position;
-         ++i) {
+        std::string processed = preprocess_delimeter(raw_msg);
+        int expected_checksum = compute_checksum(processed);
+        if (expected_checksum < 0) {
+            ValidationError err;
+            err.message = "Could not compute checksum (missing tag 10 in raw message)";
+            err.tag = 10;
+            result.errors.push_back(err);
+            return;
+        }
 
-        sum += static_cast<unsigned char>(
-            raw_message[i]);
+        int provided_checksum = -1;
+        try {
+            provided_checksum = std::stoi(checksum_it->second);
+        } catch (const std::exception &) {
+            ValidationError err;
+            err.message = "Invalid checksum value in tag 10: " + checksum_it->second;
+            err.tag = 10;
+            err.field_value = checksum_it->second;
+            result.errors.push_back(err);
+            return;
+        }
+
+        if (expected_checksum != provided_checksum) {
+            ValidationError err;
+            std::ostringstream oss;
+            oss << "Checksum mismatch: expected " << expected_checksum 
+                << ", got " << provided_checksum;
+            err.message = oss.str();
+            err.tag = 10;
+            err.field_value = checksum_it->second;
+            result.errors.push_back(err);
+        }
     }
 
-    return sum % 256U;
+    void Validator::validate_duplicates(const std::set<int>& duplicates, ValidationResult &result) const {
+        for (int tag : duplicates) {
+            ValidationError err;
+            std::ostringstream oss;
+            oss << "Duplicate tag detected: " << tag << " (FIX does not allow duplicate tags)";
+            err.message = oss.str();
+            err.tag = tag;
+            result.errors.push_back(err);
+        }
+    }
+
+    int Validator::compute_checksum(const std::string &processed_msg) const {
+        const std::string checksum_tag = "10=";
+        const std::size_t tag_pos = processed_msg.find(checksum_tag);
+        if (tag_pos == std::string::npos) {
+            return -1;
+        }
+
+        int sum = 0;
+        for (std::size_t i = 0; i < tag_pos; ++i) {
+            sum += static_cast<unsigned char>(processed_msg[i]);
+        }
+        return sum % 256;
+    }
+
+    int Validator::calculateBodyLength(const std::string &raw_msg) const {
+        std::string processed = preprocess_delimeter(raw_msg);
+        
+        // Find the position of tag 9= (BodyLength)
+        const std::string body_length_tag = "9=";
+        std::size_t tag9_pos = processed.find(body_length_tag);
+        if (tag9_pos == std::string::npos) {
+            return -1;
+        }
+        
+        // Find the start of the body (after tag 9's value and its delimiter)
+        std::size_t value_start = tag9_pos + body_length_tag.length();
+        std::size_t value_end = processed.find(soh_del, value_start);
+        if (value_end == std::string::npos) {
+            return -1;
+        }
+        
+        // The body starts after the delimiter following tag 9's value
+        std::size_t body_start = value_end + 1;
+        
+        // Find tag 10= (CheckSum)
+        const std::string checksum_tag = "10=";
+        std::size_t tag10_pos = processed.find(checksum_tag, body_start);
+        if (tag10_pos == std::string::npos) {
+            return -1;
+        }
+        
+        // Body length is from body_start to just before tag 10=
+        // This includes everything from tag 35 to tag 10 (excluding the final delimiter before 10)
+        std::size_t body_end = tag10_pos;
+        if (body_end > body_start && processed[body_end - 1] == soh_del) {
+            body_end -= 1;
+        }
+        
+        return static_cast<int>(body_end - body_start);
+    }
 }
-
-bool Validator::parse_uint(
-    std::string_view value,
-    std::uint32_t& result) noexcept {
-
-    if (value.empty()) {
-        return false;
-    }
-
-    std::uint32_t parsed = 0;
-
-    for (const char ch : value) {
-
-        if (ch < '0' || ch > '9') {
-            return false;
-        }
-
-        const std::uint32_t digit =
-            static_cast<std::uint32_t>(ch - '0');
-
-        if (parsed >
-            (std::numeric_limits<std::uint32_t>::max()
-             - digit) / 10U) {
-
-            return false;
-        }
-
-        parsed =
-            parsed * 10U + digit;
-    }
-
-    result = parsed;
-
-    return true;
-}
-
-} // namespace fix

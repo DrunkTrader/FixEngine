@@ -1,28 +1,16 @@
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-#include <string_view>
-
+#include <vector>
+#include <string>
 #include "storage.hpp"
 
 namespace fix {
+	constexpr char soh_del = '\x01';
 
-struct TokenizerResult {
-    FixMessage<> message{};
-    ParseError error{};
+	std::string preprocess_delimeter(const std::string &input);
+	std::vector<std::string> tokenize(const std::string &input);
+	FixField splitField(const std::string &token);
+}
 
-    [[nodiscard]] constexpr bool ok() const noexcept {
-        return error.ok();
-    }
-};
-
-class Tokenizer {
-public:
-    static constexpr std::size_t max_fields = 64;
-
-    [[nodiscard]] static TokenizerResult tokenize(
-        std::string_view input) noexcept;
-};
-
-} // namespace fix
+// this stores the preprocess deliemter to normalize the use of '|' and soh delimeter = '\x01'
+// also tokenize the input string to tags and value.
