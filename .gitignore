@@ -2,19 +2,23 @@
 # Compiled and build artifacts
 *.o
 *.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
 *.out
+
+# Build directories
 build/
-dist/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+*.cmake
 
 # Dependencies
-node_modules/
-venv/
-.venv/
-__pycache__/
-.mypy_cache/
-.pytest_cache/
-target/
-.gradle/
+vendor/
 
 # Logs and temp files
 *.log
@@ -29,8 +33,20 @@ target/
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# OS generated files
+# OS specific
 .DS_Store
 Thumbs.db
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Package management
+node_modules/
+__pycache__/
+*.egg-info/
 ```

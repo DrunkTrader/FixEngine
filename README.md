@@ -14,11 +14,12 @@ FlooFIX is being built from the ground up with a focus on:
 - simple, composable components
 - performance measurement
 
-> **Status:** Early development — v0.3.0
+> **Status:** Active development — v0.5.0
 
-FlooFIX is currently a FIX message parsing, ingestion, and validation core.
+FlooFIX provides a robust FIX message parsing, ingestion, validation, and TCP transport core.
+It includes enhanced error reporting, formatting utilities, and duplicate tag detection.
 It is **not yet a complete FIX session engine** and should not be considered
-production-ready.
+production-ready for trading systems without additional development.
 
 ---
 
@@ -52,7 +53,7 @@ flowchart LR
 The important design principle is that the ingestion layer operates on bytes
 rather than assuming a particular transport.
 
-This allows the same core to eventually consume data from:
+This allows the same core to consume data from:
 
 ```mermaid
 flowchart TD
@@ -71,12 +72,54 @@ flowchart TD
     F --> G[FixEngine]
 ```
 
-Networking and file replay are planned layers and are not yet part of the
-current release.
+**TCP transport is now implemented** with a multi-threaded server supporting concurrent connections, message validation, and real-time statistics tracking. File replay is planned for a future release.
 
 ---
 
 # Features
+
+## ✅ Implemented Features
+
+### Core Parsing & Validation
+- [x] FIX message representation with tag/value storage
+- [x] Tokenization with SOH delimiter support
+- [x] Parsing functionality with `FixMessage` conversion
+- [x] **Body length validation** - validates BodyLength (tag 9) against actual message body
+- [x] **Duplicate tag detection** - identifies and reports tags appearing multiple times
+- [x] Validation with header/body/checksum verification
+- [x] Incremental ingestion with `IngestionBuffer`
+
+### Enhanced Error Reporting
+- [x] Detailed `ValidationError` struct with:
+  - Error message
+  - Associated tag number
+  - Position in raw message
+  - Problematic field value
+- [x] Helper methods for error extraction
+- [x] Comprehensive validation result reporting
+
+### Formatter Utilities
+- [x] `format()` - Standard message formatting with header/body/trailer separation
+- [x] `formatDetailed()` - Detailed view with tag names, types, and values
+- [x] `formatValidationResult()` - Human-readable validation error reporting
+- [x] `toReadableString()` - Convert messages to readable format
+- [x] Field name and type identification
+
+### TCP Data Ingestion
+- [x] Multi-threaded TCP server (`TcpServer`)
+- [x] Configurable host/port and connection limits
+- [x] Concurrent client handling
+- [x] Real-time message processing pipeline
+- [x] Statistics tracking (messages received, validated, failures, connections)
+- [x] Callback-based message handling
+- [x] Graceful shutdown support
+
+### FixEngine Orchestration
+- [x] Complete processing pipeline integration
+- [x] Status checking and result aggregation
+- [x] Transport-agnostic design
+
+---
 
 ## FIX Message Representation
 
@@ -538,7 +581,7 @@ performance claims based purely on intuition.
 
 # Current Status
 
-## v0.3.0
+## v0.5.0
 
 ### Implemented
 
@@ -552,8 +595,12 @@ performance claims based purely on intuition.
 * [x] FIX validation
 * [x] Incremental ingestion buffer
 * [x] FIX message boundary detection
-* [x] `BodyLength` handling
+* [x] **BodyLength handling and validation**
 * [x] Checksum field boundary detection
+* [x] **Duplicate tag detection**
+* [x] **Enhanced error reporting with ValidationError struct**
+* [x] **Formatter utilities (format, formatDetailed, formatValidationResult)**
+* [x] **TCP transport server with multi-threaded client handling**
 * [x] `FixEngine` orchestration
 * [x] Unit/integration tests
 * [x] Storage layout tests
@@ -561,18 +608,17 @@ performance claims based purely on intuition.
 
 ### Not implemented yet
 
-* [ ] TCP transport
 * [ ] File/replay data source
 * [ ] FIX session layer
-* [ ] Logon/Logout
-* [ ] Heartbeat/TestRequest
+* [ ] Logon/Logout handling
+* [ ] Heartbeat/TestRequest messages
 * [ ] Sequence number management
 * [ ] ResendRequest / SequenceReset
 * [ ] Message generation/serialization
-* [ ] FIX data dictionary
-* [ ] Session configuration
-* [ ] TLS transport
-* [ ] Production deployment hardening
+* [ ] FIX data dictionary support
+* [ ] Session configuration management
+* [ ] TLS transport security
+* [ ] Production deployment hardening (logging, monitoring, configuration)
 
 ---
 
@@ -592,15 +638,76 @@ flowchart LR
 
     E --> F["v0.7.0<br/>Message Dispatch"]
 
-    F --> G["v0.8.0<br/>Performance + Hardening"]
+    F --> G["v0.8.0<br/>Message Dispatch"]
 
-    G --> H["v1.0.0<br/>Stable Core"]
+    G --> H["v0.9.0<br/>Performance + Hardening"]
+
+    H --> I["v1.0.0<br/>Stable Core"]
 ```
 
 The immediate next milestone is a deterministic file/replay input source.
 
-After that, transport can be introduced without changing the core parsing
-pipeline.
+After that, session layer components can be introduced for complete FIX connectivity.
+
+---
+
+# Future Improvements
+
+## Short-term (v0.6.x)
+
+### File Replay Support
+- [ ] Implement file-based data source for historical message replay
+- [ ] Support multiple file formats (raw FIX, CSV, binary)
+- [ ] Add replay speed control (real-time, accelerated, step-by-step)
+- [ ] Implement pause/resume functionality
+
+### Enhanced TCP Server
+- [ ] Add TLS/SSL support for secure connections
+- [ ] Implement connection pooling
+- [ ] Add per-client rate limiting
+- [ ] Support multiple listening ports
+
+## Medium-term (v0.7.x)
+
+### FIX Session Layer
+- [ ] Implement Logon/Logout message handling
+- [ ] Add Heartbeat and TestRequest processing
+- [ ] Sequence number management and tracking
+- [ ] ResendRequest and SequenceReset implementation
+- [ ] Session state machine
+
+### Message Generation
+- [ ] Build FIX messages from structured data
+- [ ] Automatic BodyLength calculation
+- [ ] Automatic checksum generation
+- [ ] Message templates for common types (NewOrderSingle, ExecutionReport, etc.)
+
+## Long-term (v0.8.x - v1.0.0)
+
+### FIX Data Dictionary
+- [ ] Load and parse FIX data dictionary XML files
+- [ ] Field type validation based on dictionary
+- [ ] Message structure validation
+- [ ] Custom field support
+
+### Production Features
+- [ ] Comprehensive logging framework
+- [ ] Configuration management (YAML/JSON)
+- [ ] Metrics and monitoring integration
+- [ ] Alert system for validation failures
+- [ ] Hot-reload configuration support
+
+### Performance Optimization
+- [ ] SIMD-accelerated parsing
+- [ ] Lock-free data structures for multi-threading
+- [ ] Memory pool optimization
+- [ ] Zero-copy networking integration
+
+### Testing & Quality
+- [ ] FIX compliance test suite
+- [ ] Fuzzing infrastructure
+- [ ] Performance regression testing
+- [ ] Extended benchmark suite
 
 ---
 

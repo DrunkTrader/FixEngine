@@ -36,16 +36,18 @@ EngineResult FixEngine::decode(
         .ingestion = ingestion
     };
 
-    result.parsed = parser_.parse(ingestion.message);
+    // Convert string_view to string for parser
+    std::string message_str{ingestion.message};
+    result.message = parser_.parse(message_str);
 
-    if (!result.parsed.ok()) {
+    if (result.message.empty()) {
         return result;
     }
 
     result.validation =
         validator_.validate(
-            ingestion.message,
-            result.parsed.message
+            message_str,
+            result.message
         );
 
     current_message_size_ = ingestion.consumed;

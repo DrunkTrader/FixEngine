@@ -32,6 +32,8 @@ add_library(floofix
     src/validator.cpp
     src/ingestion.cpp
     src/fix_engine.cpp
+    src/formatter.cpp
+    src/tcp_server.cpp
 )
 
 target_include_directories(floofix
