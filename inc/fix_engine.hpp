@@ -6,24 +6,25 @@
 #include "ingestion.hpp"
 #include "parser.hpp"
 #include "validator.hpp"
+#include "storage.hpp"
 
 namespace fix {
 
 struct EngineResult {
     IngestionResult ingestion{};
-    TokenizerResult parsed{};
-    ValidationResult<Validator::max_errors> validation{};
+    FixMessage message{};
+    ValidationResult validation{};
 
     [[nodiscard]] constexpr bool ready() const noexcept {
         return ingestion.ready();
     }
 
     [[nodiscard]] constexpr bool parsed_ok() const noexcept {
-        return ready() && parsed.ok();
+        return ready() && !message.empty();
     }
 
     [[nodiscard]] constexpr bool valid() const noexcept {
-        return parsed_ok() && validation.ok();
+        return parsed_ok() && validation.ok;
     }
 
     [[nodiscard]] constexpr bool need_more_data() const noexcept {

@@ -1,5 +1,6 @@
 #include "ingestion.hpp"
 #include "storage.hpp"
+#include "fix_constant.hpp"
 
 #include <limits>
 
@@ -97,7 +98,7 @@ IngestionResult FixIngestor<Capacity>::extract() noexcept {
     // ------------------------------------------------------------
 
     const std::size_t begin_end =
-        input.find(soh_del, 2);
+        input.find(fix::soh_del, 2);
 
     if (begin_end == std::string_view::npos) {
         return {
@@ -138,7 +139,7 @@ IngestionResult FixIngestor<Capacity>::extract() noexcept {
 
     const std::size_t body_length_end =
         input.find(
-            soh_del,
+            fix::soh_del,
             body_length_tag_start + 2
         );
 
@@ -232,7 +233,7 @@ IngestionResult FixIngestor<Capacity>::extract() noexcept {
 
     const std::size_t message_end =
         input.find(
-            soh_del,
+            fix::soh_del,
             checksum_start + 3
         );
 
