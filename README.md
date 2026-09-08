@@ -1,4 +1,3 @@
-````markdown
 # FlooFIX
 
 A lightweight, allocation-conscious FIX protocol parsing and validation
